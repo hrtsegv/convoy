@@ -15,6 +15,8 @@ import (
 // It reads only DatabaseURL and DBMaxConns from cfg. The caller supplies any
 // startup deadline and owns the returned pool, including closing it.
 // On failure, Open closes any pool it created and returns nil with the error.
+// Wrapped connection-string parse errors may contain credentials; callers must
+// classify them before logging and use a static message instead of their text.
 func Open(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("open PostgreSQL pool: %w", err)

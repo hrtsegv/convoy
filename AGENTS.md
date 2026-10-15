@@ -12,7 +12,7 @@ Involve the owner heavily in transaction boundaries, locking, claiming, leases, 
 
 Phase 0: repository and engineering baseline, still in progress.
 
-- Implemented: Go module, environment configuration, PostgreSQL pool bootstrap, unit tests, an opt-in bootstrap integration test, development commands, and basic CI.
+- Implemented: Go module, environment configuration, PostgreSQL pool bootstrap, unit tests, opt-in bootstrap integration tests, development commands, and basic CI.
 - Pending: migration command and baseline migration, server lifecycle, HTTP health/readiness skeleton, and repeatable integration-test database orchestration.
 - Next learning checkpoint: migration version tracking, transaction boundaries, and failure behavior before implementing the migration command.
 
@@ -37,6 +37,7 @@ Update this overview as approved work changes it. Read the relevant implementati
 - The caller owns the startup context/deadline; the helper must not apply `DBConnectTimeout` or create a startup timeout.
 - Create the pool and verify connectivity with `Ping(ctx)`. Every failure returns a nil pool and an error; after creation, failure cleanup closes the pool synchronously.
 - Wrap underlying errors appropriately for `errors.Is` and `errors.As`.
+- Before formatting errors at startup or test logging boundaries, classify wrapped `*pgconn.ParseConfigError` values with `errors.As`. For parse failures, emit a static configuration-error message; never log the error text, its causes, or `ConnString`. Driver password redaction is best-effort. Preserve the error chain for programmatic inspection.
 - Success transfers ownership, including `Close`, to the caller. Cancelling the startup context afterward does not close the pool; later operations use their own contexts.
 - `Close` has no context parameter, so startup deadlines are not strict cleanup-time bounds.
 
