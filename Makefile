@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: help fmt fmt-check vet build test test-race check migrate migrate-version run
+.PHONY: help fmt fmt-check vet build test test-unit test-race check migrate migrate-version run
 
 help:
 	@printf '%s\n' \
@@ -8,8 +8,9 @@ help:
 		'make fmt-check  Check Go formatting' \
 		'make vet        Run go vet' \
 		'make build      Build all packages' \
-		'make test       Run tests' \
-		'make test-race  Run tests with the race detector' \
+		'make test       Run unit and integration tests with a disposable PostgreSQL database' \
+		'make test-unit  Run unit tests without Docker' \
+		'make test-race  Run the full test suite with the race detector' \
 		'make check      Check formatting, vet, tests, and build' \
 		'make migrate    Apply pending database migrations' \
 		'make migrate-version  Show the database migration version' \
@@ -32,10 +33,13 @@ build:
 	$(GO) build ./...
 
 test:
+	GO="$(GO)" ./scripts/test.sh
+
+test-unit:
 	$(GO) test ./...
 
 test-race:
-	$(GO) test -race ./...
+	GO="$(GO)" ./scripts/test.sh -race
 
 check: fmt-check vet test build
 

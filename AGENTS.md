@@ -12,13 +12,12 @@ Involve the owner heavily in transaction boundaries, locking, claiming, leases, 
 
 ## Current scope
 
-Phase 0: repository and engineering baseline, still in progress.
+Phase 0: repository and engineering baseline, completed and approved.
 
-- Implemented: Go module, environment configuration, PostgreSQL pool bootstrap, migration command with embedded no-op baseline, server lifecycle and HTTP health/readiness skeleton, unit and opt-in integration tests, development commands, and basic CI.
-- Pending: repeatable integration-test database orchestration.
-- Server lifecycle and HTTP health/readiness skeleton reviewed and approved. Next component: repeatable integration-test database orchestration. Migration command is reviewed and committed.
+- Implemented: Go module, environment configuration, PostgreSQL pool bootstrap, migration command with embedded no-op baseline, server lifecycle and HTTP health/readiness skeleton, unit and integration tests, disposable test-database orchestration, development commands, and CI for the full suite.
+- Test-database orchestration and Phase 0 acceptance reviewed and approved. Await the owner's direction before starting Phase 1.
 
-Phase 0 ends when a fresh database can migrate, the server starts and passes readiness, and one command runs unit and integration tests. Integration testing is currently separate.
+Phase 0 acceptance: a fresh database migrates, the server starts and passes readiness, and `make test` runs unit and integration tests with automatic database setup and teardown. Do not start Phase 1 without the owner's direction.
 
 Do not add job tables, enqueue APIs, workers, claiming, leases, retries, or scheduling in Phase 0. Kubernetes, KEDA, Prometheus, brokers, multiple control-plane nodes, partitioning, and sharding belong to later work. Keep application containerization and worker scaling for their own milestone.
 
@@ -32,7 +31,8 @@ Do not add job tables, enqueue APIs, workers, claiming, leases, retries, or sche
 - `cmd/server`: configuration, structured logging, signal handling, startup connection deadline, and pool ownership.
 - `internal/server`: HTTP probes and graceful HTTP lifecycle using `net/http`; no queue APIs.
 - `Makefile`: local formatting, vet, build, and test commands.
-- `.github/workflows/ci.yml`: selects Go from `go.mod`; checks formatting, vet, build, and tests with the race detector. PostgreSQL integration tests are not yet wired into CI.
+- `scripts/test.sh`: creates a disposable PostgreSQL 17 container, waits for TCP readiness, migrates it, runs the full suite without caching, and removes its container and anonymous volume on exit.
+- `.github/workflows/ci.yml`: selects Go from `go.mod`; checks formatting, vet, build, and the same Docker-backed unit/integration suite with the race detector.
 
 Update this overview as approved work changes it. Read the relevant implementation and tests before editing.
 
@@ -74,7 +74,10 @@ Use JSON `slog` output with configured severity. Classify DSN parse errors befor
 ```sh
 make check
 make test-race
+make test-unit
 ```
+
+`make test` and `make test-race` require Bash and a running local Docker daemon. They create their own fresh database and override the test database URL for that run. `make test-unit` remains Docker-free. The full integration suite includes application startup, health/readiness checks, and graceful shutdown. The script only removes the container ID it created and its anonymous data volume.
 
 For PostgreSQL bootstrap integration testing, set `CONVOY_TEST_DATABASE_URL` to a running test database, then run:
 

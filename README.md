@@ -6,18 +6,27 @@ The repository currently contains configuration parsing, PostgreSQL pool bootstr
 
 ## Development
 
-Use Go **1.27.2** and Make.
+Use Go **1.27.2**, Make, Bash, and a running local Docker daemon.
 
 ```sh
 go version
 make check
 ```
 
-Run `make help` for available commands. Use `make test-race` to run tests with Go's race detector.
+Run `make help` for available commands.
 
-CI selects the Go version from `go.mod` and checks formatting, vet, build, and tests with the race detector.
+| Command | Checks |
+| --- | --- |
+| `make test` | Unit and integration tests against a fresh PostgreSQL database |
+| `make test-race` | Full suite with Go's race detector |
+| `make test-unit` | Unit tests without Docker |
+| `make check` | Formatting, vet, full test suite, and build |
 
-The default tests run without PostgreSQL. To run the bootstrap integration test against a running test database:
+The full suite starts an isolated `postgres:17-alpine` container, waits for TCP readiness, applies the baseline migration, and runs all tests with the `integration` tag. Each run uses a dynamically allocated loopback port and a fresh anonymous data volume. The script removes its container and volume on success, failure, or handled interruption. It does not reuse an existing `CONVOY_TEST_DATABASE_URL`, and test caching is disabled so each run exercises its fresh database. The suite includes application startup, HTTP health/readiness, and graceful shutdown.
+
+CI selects Go from `go.mod` and runs formatting, vet, build, and the same Docker-backed full suite with the race detector.
+
+For focused tests against a test database you manage yourself, set `CONVOY_TEST_DATABASE_URL`. For example, run the bootstrap integration tests with:
 
 ```sh
 CONVOY_TEST_DATABASE_URL='postgres://user:password@127.0.0.1:5432/convoy_test?sslmode=disable' \
