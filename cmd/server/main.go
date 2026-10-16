@@ -69,7 +69,7 @@ func run(ctx context.Context, output io.Writer) int {
 		logger.Error("HTTP listen failed", "error", err)
 		return 1
 	}
-	if err := server.Serve(ctx, listener, server.Handler(ctx, pool, cfg.DBQueryTimeout), cfg.ShutdownTimeout, logger); err != nil {
+	if err := server.Serve(ctx, listener, server.Handler(ctx, pool, cfg, logger), cfg.ShutdownTimeout, logger); err != nil {
 		logger.Error("HTTP server failed", "error", err)
 		return 1
 	}

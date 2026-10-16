@@ -2,7 +2,7 @@
 
 Convoy is a Go project for building a PostgreSQL-backed durable job execution system.
 
-The repository currently contains configuration parsing, PostgreSQL pool bootstrap, a migration command, an HTTP health/readiness server, and development checks.
+The repository currently supports durable job enqueue and lookup in one queue, along with configuration, migrations, HTTP health/readiness, and development checks. Worker execution is not implemented yet.
 
 ## Development
 
@@ -22,7 +22,7 @@ Run `make help` for available commands.
 | `make test-unit` | Unit tests without Docker |
 | `make check` | Formatting, vet, full test suite, and build |
 
-The full suite starts an isolated `postgres:17-alpine` container, waits for TCP readiness, applies the baseline migration, and runs all tests with the `integration` tag. Each run uses a dynamically allocated loopback port and a fresh anonymous data volume. The script removes its container and volume on success, failure, or handled interruption. It does not reuse an existing `CONVOY_TEST_DATABASE_URL`, and test caching is disabled so each run exercises its fresh database. The suite includes application startup, HTTP health/readiness, and graceful shutdown.
+The full suite starts an isolated `postgres:17-alpine` container, waits for TCP readiness, applies migrations, and runs all tests with the `integration` tag. Each run uses a dynamically allocated loopback port and a fresh anonymous data volume. The script removes its container and volume on success, failure, or handled interruption. It does not reuse an existing `CONVOY_TEST_DATABASE_URL`, and test caching is disabled so each run exercises its fresh database. The suite includes application startup, HTTP health/readiness, graceful shutdown, job persistence across an API process restart, and commit-failure behavior. Job tests create and migrate their own isolated schemas.
 
 CI selects Go from `go.mod` and runs formatting, vet, build, and the same Docker-backed full suite with the race detector.
 
@@ -77,7 +77,26 @@ Startup verifies PostgreSQL connectivity within `CONVOY_DB_CONNECT_TIMEOUT` befo
 
 Logs are structured JSON on stderr, filtered by `CONVOY_LOG_LEVEL`. Connection strings and connection-string parse error causes are never logged. Probe responses contain no underlying database error details.
 
-SIGINT or SIGTERM stops accepting connections and gives active HTTP requests `CONVOY_SHUTDOWN_TIMEOUT` to finish. On timeout the server closes active connections and exits unsuccessfully. A second signal uses normal signal termination. The database pool closes after HTTP shutdown. The HTTP deadline does not impose a strict bound on synchronous pool cleanup. HTTP headers have a five-second read deadline; idle keep-alive connections have a one-minute deadline.
+SIGINT or SIGTERM stops accepting connections and gives active HTTP requests `CONVOY_SHUTDOWN_TIMEOUT` to finish. On timeout the server closes active connections and exits unsuccessfully. A second signal uses normal signal termination. The database pool closes after HTTP shutdown. The HTTP deadline does not impose a strict bound on synchronous pool cleanup. HTTP headers have a five-second read deadline, request reads have a ten-second deadline, response writes have a thirty-second deadline, and idle keep-alive connections have a one-minute deadline.
+
+## Jobs
+
+Enqueue a job with a JSON request, then use the returned ID to read it:
+
+```sh
+curl -i http://127.0.0.1:8080/v1/jobs \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"echo","payload":{"message":"hello"}}'
+curl -i http://127.0.0.1:8080/v1/jobs/JOB_UUID
+```
+
+`POST /v1/jobs` returns `201 Created`, a `Location` header, and the persisted job: `id`, `queue`, `kind`, `payload`, `state`, and `created_at`. Queue is always `default`, and state is currently always `available`. `GET /v1/jobs/{id}` returns that record, 404 for an absent job, or 400 for an invalid UUID.
+
+The request must contain only `kind` and `payload`, with `Content-Type: application/json` and a body no larger than 1 MiB. Kind starts with an ASCII letter and contains at most 128 ASCII letters, digits, underscores, dots, or hyphens. Payload is required and may be any JSONB-supported JSON value, including JSON `null`. Unknown fields, malformed JSON, and unsupported JSONB values return 400; oversized bodies return 413 and unsupported content types return 415. JSONB can normalize formatting and object-key order. No handlers are registered or executed yet.
+
+Enqueue uses one `INSERT ... RETURNING` in PostgreSQL's implicit transaction and fully checks the result before returning 201. A timeout or connection failure returns 503 with an uncertain-outcome message: the row may already have committed. Enqueue is not idempotent; retrying can create another job, even when the first HTTP response was lost. No automatic enqueue retry or compensation is performed. Job queries use the request context capped by `CONVOY_JOB_QUERY_TIMEOUT`, separately from readiness checks.
+
+Jobs survive API process restarts because PostgreSQL owns their durable state. The current schema permits only `available`; worker state transitions and completion metadata will be added when worker execution is designed. Database messages and details can include payload values, so job-operation logs include only a static message, operation, and SQLSTATE where available.
 
 ## Migrations
 
@@ -90,7 +109,7 @@ go run ./cmd/migrate version
 
 `make migrate` and `make migrate-version` run the same commands. The command only reads `CONVOY_DATABASE_URL`; server settings do not affect migration execution. Build a standalone binary with `go build -o bin/migrate ./cmd/migrate` when needed.
 
-SQL files are embedded from `internal/migrate/migrations`. Version 1 is a no-op baseline (`SELECT 1`); it creates no application tables. Repeating `up` with no pending migrations succeeds. `version` reports the version and dirty flag, or `version=none dirty=false` on a fresh database. Initializing either command creates the migration metadata table if needed.
+SQL files are embedded from `internal/migrate/migrations`. Version 1 is an unchanged no-op baseline (`SELECT 1`); version 2 creates the jobs table. Repeating `up` with no pending migrations succeeds. `version` reports the version and dirty flag, or `version=none dirty=false` on a fresh database. Initializing either command creates the migration metadata table if needed.
 
 The command uses golang-migrate's pgx/v5 driver through `WithInstance`, pgx simple-query mode, and `MultiStatementEnabled: false`. Ordinary migration files contain no explicit transaction-control statements or operations that cannot run in a transaction: each whole file runs in PostgreSQL's implicit transaction. DSN parameters beginning with `x-` are rejected; migration driver options belong in code.
 
@@ -110,6 +129,7 @@ Configuration is read from environment variables. Optional variables use their d
 | `CONVOY_DB_MAX_CONNS` | `4` | Maximum database pool connections |
 | `CONVOY_DB_CONNECT_TIMEOUT` | `5s` | Database startup connection-check deadline |
 | `CONVOY_DB_QUERY_TIMEOUT` | `2s` | Database readiness-check deadline |
+| `CONVOY_JOB_QUERY_TIMEOUT` | `5s` | Deadline for each job enqueue or lookup database operation |
 | `CONVOY_SHUTDOWN_TIMEOUT` | `10s` | HTTP shutdown deadline |
 
 Timeouts must be positive Go durations, such as `500ms` or `5s`. The pool connection limit must be a positive 32-bit integer. Database connection-string syntax is validated by the database driver when connecting.

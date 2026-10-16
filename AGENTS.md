@@ -12,14 +12,15 @@ Involve the owner heavily in transaction boundaries, locking, claiming, leases, 
 
 ## Current scope
 
-Phase 0: repository and engineering baseline, completed and approved.
+Phase 1: durable enqueue and a single worker, in progress. Phase 0 is completed and approved.
 
 - Implemented: Go module, environment configuration, PostgreSQL pool bootstrap, migration command with embedded no-op baseline, server lifecycle and HTTP health/readiness skeleton, unit and integration tests, disposable test-database orchestration, development commands, and CI for the full suite.
-- Test-database orchestration and Phase 0 acceptance reviewed and approved. Await the owner's direction before starting Phase 1.
+- Current slice: durable enqueue and lookup, using one implicit-transaction insert, JSONB payloads, and a single default queue. The owner reviewed and approved this implementation.
+- Next learning checkpoint: single-worker state transitions, claiming, handler execution outside transactions, and completion. Do not implement the worker until those semantics are agreed.
 
-Phase 0 acceptance: a fresh database migrates, the server starts and passes readiness, and `make test` runs unit and integration tests with automatic database setup and teardown. Do not start Phase 1 without the owner's direction.
+Phase 0 acceptance is satisfied: a fresh database migrates, the server starts and passes readiness, and `make test` runs unit and integration tests with automatic database setup and teardown.
 
-Do not add job tables, enqueue APIs, workers, claiming, leases, retries, or scheduling in Phase 0. Kubernetes, KEDA, Prometheus, brokers, multiple control-plane nodes, partitioning, and sharding belong to later work. Keep application containerization and worker scaling for their own milestone.
+Phase 1 permits one queue and one worker, but the current slice includes only enqueue/read APIs. Multiple workers, leases, fencing, retries, idempotency, and delayed scheduling remain deferred. Kubernetes, KEDA, Prometheus, brokers, multiple control-plane nodes, partitioning, and sharding belong to later work. Keep application containerization and worker scaling for their own milestone.
 
 ## Repository map
 
@@ -29,7 +30,9 @@ Do not add job tables, enqueue APIs, workers, claiming, leases, retries, or sche
 - `cmd/migrate`: `up` and `version` command; reads only `CONVOY_DATABASE_URL`, handles interrupts, and classifies parse errors before logging.
 - `internal/migrate`: concrete migration runner, embedded SQL files, and tests for atomicity, dirty state, graceful stopping, and initialization cleanup.
 - `cmd/server`: configuration, structured logging, signal handling, startup connection deadline, and pool ownership.
-- `internal/server`: HTTP probes and graceful HTTP lifecycle using `net/http`; no queue APIs.
+- `internal/server`: HTTP probes, job enqueue/read routes, and graceful HTTP lifecycle using `net/http`.
+- `internal/jobs`: concrete pgx pool store, job record, validation, and visible SQL for enqueue/read.
+- `internal/testdb`: integration-only helper that creates, migrates, and drops isolated test schemas.
 - `Makefile`: local formatting, vet, build, and test commands.
 - `scripts/test.sh`: creates a disposable PostgreSQL 17 container, waits for TCP readiness, migrates it, runs the full suite without caching, and removes its container and anonymous volume on exit.
 - `.github/workflows/ci.yml`: selects Go from `go.mod`; checks formatting, vet, build, and the same Docker-backed unit/integration suite with the race detector.
@@ -63,11 +66,21 @@ The first Ctrl-C cancels the command context; a small driver adapter checks it b
 
 The application applies `DBConnectTimeout` to a startup context, opens and verifies the pool, and cancels that context immediately afterward. It retains pool ownership until HTTP shutdown completes. Migrations run separately.
 
-`GET /healthz` checks process liveness without PostgreSQL. `GET /readyz` pings the concrete pool with a request-owned context capped by `DBQueryTimeout`, returning 503 on failure or shutdown. Responses contain no database error details. Later concern: schema compatibility checks when application tables are introduced; Phase 0 readiness checks connectivity only.
+`GET /healthz` checks process liveness without PostgreSQL. `GET /readyz` pings the concrete pool with a request-owned context capped by `DBQueryTimeout`, returning 503 on failure or shutdown. Responses contain no database error details. Readiness currently checks connectivity only. Later concern: schema compatibility checks before deployment and upgrade support.
 
 The first SIGINT or SIGTERM cancels the application lifecycle and restores default handling for a second signal. HTTP shutdown uses a fresh background context with `ShutdownTimeout`, allowing in-flight requests to drain rather than immediately cancelling them. A shutdown deadline force-closes connections and returns an error. Pool cleanup remains synchronous and is not strictly bounded by the HTTP shutdown timeout.
 
 Use JSON `slog` output with configured severity. Classify DSN parse errors before formatting them, including their underlying causes. Do not log the whole configuration.
+
+## Durable enqueue contract
+
+Migration 1 stays unchanged; migration 2 adds jobs with UUID IDs, a queue, kind, JSONB payload, state, and creation time. The current schema accepts only state `available`; expand it when worker transitions are agreed. The HTTP API enqueues into `default` only. No claim indexes or future ownership fields are added yet.
+
+Enqueue uses one `INSERT ... RETURNING`, with the full result checked before returning 201. A connection failure or timeout can leave a committed job even though the client sees an error. Never retry inserts automatically, imply that every error means rollback, or compensate by deleting a possibly committed job. Duplicate enqueue requests create distinct IDs until idempotency is introduced in its milestone.
+
+Job SQL uses request contexts capped by `JobQueryTimeout` (default 5s); `DBQueryTimeout` remains dedicated to readiness. HTTP JSON bodies are capped at 1 MiB. Kind and JSON payloads are validated, UUIDs are checked before lookups, and error responses expose no database details. PostgreSQL errors can contain payloads in both message and detail: log only static operation names and SQLSTATE, preserving underlying error chains for programmatic inspection.
+
+Tests include deferred commit failure after `RETURNING`, direct database constraints, payload validation, query cancellation/deadlines, and killing/restarting an API subprocess after 201 before reading the same job from another process.
 
 ## Verification
 

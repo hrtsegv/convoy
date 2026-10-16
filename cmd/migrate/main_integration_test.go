@@ -75,12 +75,12 @@ func TestMigrationCommand(t *testing.T) {
 	}
 	check("version", 0, "version=none dirty=false")
 	check("up", 0, "migrations applied")
-	check("version", 0, "version=1 dirty=false")
+	check("version", 0, "version=2 dirty=false")
 	check("up", 0, "no pending migrations")
-	if _, err := observer.Exec(ctx, "UPDATE "+pgx.Identifier{schema, "schema_migrations"}.Sanitize()+" SET version = 2, dirty = true"); err != nil {
+	if _, err := observer.Exec(ctx, "UPDATE "+pgx.Identifier{schema, "schema_migrations"}.Sanitize()+" SET version = 3, dirty = true"); err != nil {
 		t.Fatal("could not prepare dirty migration metadata")
 	}
-	check("version", 0, "version=2 dirty=true")
-	check("up", 1, "version 2 is dirty")
-	check("version", 0, "version=2 dirty=true")
+	check("version", 0, "version=3 dirty=true")
+	check("up", 1, "version 3 is dirty")
+	check("version", 0, "version=3 dirty=true")
 }

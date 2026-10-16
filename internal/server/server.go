@@ -10,9 +10,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/hrtsegv/convoy/internal/config"
+	"github.com/hrtsegv/convoy/internal/jobs"
 )
 
-func Handler(lifecycle context.Context, pool *pgxpool.Pool, queryTimeout time.Duration) http.Handler {
+func Handler(lifecycle context.Context, pool *pgxpool.Pool, cfg config.Config, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -23,7 +26,7 @@ func Handler(lifecycle context.Context, pool *pgxpool.Pool, queryTimeout time.Du
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), cfg.DBQueryTimeout)
 		defer cancel()
 		if err := pool.Ping(ctx); err != nil {
 			http.Error(w, "not ready", http.StatusServiceUnavailable)
@@ -32,6 +35,7 @@ func Handler(lifecycle context.Context, pool *pgxpool.Pool, queryTimeout time.Du
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		fmt.Fprintln(w, "ready")
 	})
+	registerJobRoutes(mux, lifecycle, jobs.New(pool), cfg.JobQueryTimeout, logger)
 	return mux
 }
 
@@ -46,6 +50,8 @@ func Serve(ctx context.Context, listener net.Listener, handler http.Handler, shu
 	httpServer := &http.Server{
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       time.Minute,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}

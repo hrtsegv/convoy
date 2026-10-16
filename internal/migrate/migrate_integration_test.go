@@ -87,13 +87,10 @@ func TestMigrationDriverNoOpBaseline(t *testing.T) {
 	if _, _, err := runner.Version(); !errors.Is(err, gomigrate.ErrNilVersion) {
 		t.Fatal("expected no applied migration in a fresh schema")
 	}
-	if err := runner.Up(); err != nil {
+	if err := runner.Steps(1); err != nil {
 		t.Fatal("could not apply no-op baseline")
 	}
 	assertVersion(t, runner, 1, false)
-	if err := runner.Up(); !errors.Is(err, gomigrate.ErrNoChange) {
-		t.Fatal("expected a repeated up invocation to report no change")
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -106,6 +103,14 @@ func TestMigrationDriverNoOpBaseline(t *testing.T) {
 		t.Fatalf("expected only the migration metadata table, got %d tables", count)
 	}
 	assertTableExists(t, observer, schema, "schema_migrations", true)
+	if err := runner.Up(); err != nil {
+		t.Fatal("could not apply the jobs migration after the baseline")
+	}
+	assertVersion(t, runner, 2, false)
+	assertTableExists(t, observer, schema, "jobs", true)
+	if err := runner.Up(); !errors.Is(err, gomigrate.ErrNoChange) {
+		t.Fatal("expected a repeated up invocation to report no change")
+	}
 }
 
 func TestMigrationGracefulStopFinishesCurrentFile(t *testing.T) {

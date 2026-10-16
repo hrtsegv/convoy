@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/hrtsegv/convoy/internal/config"
 )
 
 func TestProbeRoutes(t *testing.T) {
@@ -20,7 +22,7 @@ func TestProbeRoutes(t *testing.T) {
 		t.Fatal("could not create lazy test pool")
 	}
 	pool.Close()
-	handler := Handler(context.Background(), pool, time.Second)
+	handler := Handler(context.Background(), pool, config.Config{DBQueryTimeout: time.Second}, testLogger())
 	for _, test := range []struct {
 		method string
 		path   string
@@ -47,7 +49,7 @@ func TestProbeRoutes(t *testing.T) {
 func TestReadinessRejectsShutdownBeforeUsingDatabase(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	handler := Handler(ctx, nil, time.Second)
+	handler := Handler(ctx, nil, config.Config{DBQueryTimeout: time.Second}, testLogger())
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest("GET", "/readyz", nil))
 	if recorder.Code != http.StatusServiceUnavailable {

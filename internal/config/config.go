@@ -18,6 +18,7 @@ type Config struct {
 	DBMaxConns       int32
 	DBConnectTimeout time.Duration
 	DBQueryTimeout   time.Duration
+	JobQueryTimeout  time.Duration
 	ShutdownTimeout  time.Duration
 }
 
@@ -53,6 +54,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg.DBQueryTimeout, err = positiveDuration("CONVOY_DB_QUERY_TIMEOUT", "2s")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.JobQueryTimeout, err = positiveDuration("CONVOY_JOB_QUERY_TIMEOUT", "5s")
 	if err != nil {
 		return Config{}, err
 	}

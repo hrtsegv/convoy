@@ -22,6 +22,7 @@ func TestLoadDefaults(t *testing.T) {
 		DBMaxConns:       4,
 		DBConnectTimeout: 5 * time.Second,
 		DBQueryTimeout:   2 * time.Second,
+		JobQueryTimeout:  5 * time.Second,
 		ShutdownTimeout:  10 * time.Second,
 	}
 	if cfg != want {
@@ -37,6 +38,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("CONVOY_DB_MAX_CONNS", "8")
 	t.Setenv("CONVOY_DB_CONNECT_TIMEOUT", "3s")
 	t.Setenv("CONVOY_DB_QUERY_TIMEOUT", "500ms")
+	t.Setenv("CONVOY_JOB_QUERY_TIMEOUT", "750ms")
 	t.Setenv("CONVOY_SHUTDOWN_TIMEOUT", "20s")
 
 	cfg, err := Load()
@@ -51,6 +53,7 @@ func TestLoadOverrides(t *testing.T) {
 		DBMaxConns:       8,
 		DBConnectTimeout: 3 * time.Second,
 		DBQueryTimeout:   500 * time.Millisecond,
+		JobQueryTimeout:  750 * time.Millisecond,
 		ShutdownTimeout:  20 * time.Second,
 	}
 	if cfg != want {
@@ -79,6 +82,8 @@ func TestLoadRejectsInvalidConfiguration(t *testing.T) {
 		{name: "negative query timeout", key: "CONVOY_DB_QUERY_TIMEOUT", value: "-1s"},
 		{name: "duration overflow", key: "CONVOY_DB_QUERY_TIMEOUT", value: "999999999999h"},
 		{name: "invalid shutdown timeout", key: "CONVOY_SHUTDOWN_TIMEOUT", value: "ten seconds"},
+		{name: "invalid job timeout", key: "CONVOY_JOB_QUERY_TIMEOUT", value: "soon"},
+		{name: "zero job timeout", key: "CONVOY_JOB_QUERY_TIMEOUT", value: "0s"},
 	}
 
 	for _, test := range tests {
@@ -111,6 +116,7 @@ func setTestEnv(t *testing.T) {
 		"CONVOY_DB_MAX_CONNS",
 		"CONVOY_DB_CONNECT_TIMEOUT",
 		"CONVOY_DB_QUERY_TIMEOUT",
+		"CONVOY_JOB_QUERY_TIMEOUT",
 		"CONVOY_SHUTDOWN_TIMEOUT",
 	} {
 		t.Setenv(key, "")

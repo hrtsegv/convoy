@@ -29,7 +29,7 @@ func TestReadinessWithPostgreSQL(t *testing.T) {
 	cancelStartup()
 	lifecycle, stop := context.WithCancel(context.Background())
 	defer stop()
-	httpServer := httptest.NewServer(Handler(lifecycle, pool, 50*time.Millisecond))
+	httpServer := httptest.NewServer(Handler(lifecycle, pool, config.Config{DBQueryTimeout: 50 * time.Millisecond}, testLogger()))
 	defer httpServer.Close()
 	client := &http.Client{Timeout: 5 * time.Second}
 	defer client.CloseIdleConnections()
@@ -60,7 +60,7 @@ func TestReadinessWithPostgreSQL(t *testing.T) {
 	requestCtx, cancelRequest := context.WithCancel(context.Background())
 	cancelRequest()
 	recorder := httptest.NewRecorder()
-	Handler(lifecycle, pool, time.Hour).ServeHTTP(recorder,
+	Handler(lifecycle, pool, config.Config{DBQueryTimeout: time.Hour}, testLogger()).ServeHTTP(recorder,
 		httptest.NewRequestWithContext(requestCtx, "GET", "/readyz", nil))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("cancelled readiness request: status=%d; want 503", recorder.Code)

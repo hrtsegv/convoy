@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"testing"
@@ -52,11 +53,16 @@ func TestServerLifecycleIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		_, readErr := io.Copy(io.Discard, response.Body)
 		response.Body.Close()
+		if readErr != nil {
+			t.Fatal("could not finish the probe response")
+		}
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("%s: status=%d; want 200", path, response.StatusCode)
 		}
 	}
+	client.CloseIdleConnections()
 	cancel()
 	select {
 	case <-done:
