@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: help fmt fmt-check vet build test test-race check migrate migrate-version
+.PHONY: help fmt fmt-check vet build test test-race check migrate migrate-version run
 
 help:
 	@printf '%s\n' \
@@ -12,7 +12,8 @@ help:
 		'make test-race  Run tests with the race detector' \
 		'make check      Check formatting, vet, tests, and build' \
 		'make migrate    Apply pending database migrations' \
-		'make migrate-version  Show the database migration version'
+		'make migrate-version  Show the database migration version' \
+		'make run        Start the HTTP server'
 
 fmt:
 	$(GO) fmt ./...
@@ -43,3 +44,6 @@ migrate:
 
 migrate-version:
 	$(GO) run ./cmd/migrate version
+
+run:
+	$(GO) run ./cmd/server

@@ -14,9 +14,9 @@ Involve the owner heavily in transaction boundaries, locking, claiming, leases, 
 
 Phase 0: repository and engineering baseline, still in progress.
 
-- Implemented: Go module, environment configuration, PostgreSQL pool bootstrap, migration command with embedded no-op baseline, unit and opt-in integration tests, development commands, and basic CI.
-- Pending: server lifecycle, HTTP health/readiness skeleton, and repeatable integration-test database orchestration.
-- Migration command reviewed and approved. Next component: server lifecycle and HTTP health/readiness skeleton.
+- Implemented: Go module, environment configuration, PostgreSQL pool bootstrap, migration command with embedded no-op baseline, server lifecycle and HTTP health/readiness skeleton, unit and opt-in integration tests, development commands, and basic CI.
+- Pending: repeatable integration-test database orchestration.
+- Server lifecycle and HTTP health/readiness skeleton reviewed and approved. Next component: repeatable integration-test database orchestration. Migration command is reviewed and committed.
 
 Phase 0 ends when a fresh database can migrate, the server starts and passes readiness, and one command runs unit and integration tests. Integration testing is currently separate.
 
@@ -29,6 +29,8 @@ Do not add job tables, enqueue APIs, workers, claiming, leases, retries, or sche
 - `internal/postgres`: concrete pool bootstrap and its unit/integration tests.
 - `cmd/migrate`: `up` and `version` command; reads only `CONVOY_DATABASE_URL`, handles interrupts, and classifies parse errors before logging.
 - `internal/migrate`: concrete migration runner, embedded SQL files, and tests for atomicity, dirty state, graceful stopping, and initialization cleanup.
+- `cmd/server`: configuration, structured logging, signal handling, startup connection deadline, and pool ownership.
+- `internal/server`: HTTP probes and graceful HTTP lifecycle using `net/http`; no queue APIs.
 - `Makefile`: local formatting, vet, build, and test commands.
 - `.github/workflows/ci.yml`: selects Go from `go.mod`; checks formatting, vet, build, and tests with the race detector. PostgreSQL integration tests are not yet wired into CI.
 
@@ -57,6 +59,16 @@ After a SQL error in an ordinary migration, its SQL changes roll back but the se
 
 The first Ctrl-C cancels the command context; a small driver adapter checks it before marking the next file dirty. The current file and clean-version bookkeeping finish before stopping. Do not use the upstream `GracefulStop` channel: v4.20.1 has a reproduced data race on that path. The adapter preserves the library's full-run advisory lock and SQL execution behavior. Interrupted execution returns status 130. The second Ctrl-C uses normal signal termination. Driver `StatementTimeout` is explicitly zero, and readiness timeout configuration is not reused. Initialization, locking, and cleanup are not bounded by graceful stop. Later concern: revisit a dedicated per-file execution timeout before substantive migrations; do not expand migration plumbing without a concrete need.
 
+## Server lifecycle contract
+
+The application applies `DBConnectTimeout` to a startup context, opens and verifies the pool, and cancels that context immediately afterward. It retains pool ownership until HTTP shutdown completes. Migrations run separately.
+
+`GET /healthz` checks process liveness without PostgreSQL. `GET /readyz` pings the concrete pool with a request-owned context capped by `DBQueryTimeout`, returning 503 on failure or shutdown. Responses contain no database error details. Later concern: schema compatibility checks when application tables are introduced; Phase 0 readiness checks connectivity only.
+
+The first SIGINT or SIGTERM cancels the application lifecycle and restores default handling for a second signal. HTTP shutdown uses a fresh background context with `ShutdownTimeout`, allowing in-flight requests to drain rather than immediately cancelling them. A shutdown deadline force-closes connections and returns an error. Pool cleanup remains synchronous and is not strictly bounded by the HTTP shutdown timeout.
+
+Use JSON `slog` output with configured severity. Classify DSN parse errors before formatting them, including their underlying causes. Do not log the whole configuration.
+
 ## Verification
 
 ```sh
@@ -80,11 +92,20 @@ go test -race -tags=integration ./internal/migrate ./cmd/migrate -v
 
 These tests create and drop their own isolated schemas. They verify rollback on statement 2 failure, dirty-version persistence across runner sessions, refusal to retry dirty migrations, the embedded baseline from zero, command behavior, graceful stop, and cleanup after failed initialization.
 
+Run all PostgreSQL integration tests, including HTTP readiness and request deadline checks, with:
+
+```sh
+go test -race -tags=integration ./... -v
+```
+
+For stop/start experiments, keep the database endpoint stable; Docker can reassign dynamically published host ports on restart.
+
 Run checks appropriate to the change and report what actually ran, including any unavailable checks. Define expected behavior before failure experiments and explain observed results.
 
 ## Git workflow
 
 - Never add `Co-authored-by` trailers or AI attribution to commit messages. Preserve the configured Git author and committer identity.
-- Stage, commit, or push only when the owner explicitly authorizes the action. Commit authorization does not imply push authorization.
+- After the owner approves changes, stage and commit that approved set automatically; this is standing commit authorization, so no separate commit request is needed. Preserve unrelated edits and leave unreviewed work out of the commit.
+- Push only when explicitly authorized. Approval and commit authorization do not imply push authorization.
 - Stage explicit paths, respect Git ignore rules, and never force-add ignored files. Review the staged diff before committing.
 - Keep commits small and logical, with messages describing the actual change. Preserve unrelated owner edits.

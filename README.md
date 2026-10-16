@@ -2,7 +2,7 @@
 
 Convoy is a Go project for building a PostgreSQL-backed durable job execution system.
 
-The repository currently contains configuration parsing, PostgreSQL pool bootstrap, a migration command, and development checks.
+The repository currently contains configuration parsing, PostgreSQL pool bootstrap, a migration command, an HTTP health/readiness server, and development checks.
 
 ## Development
 
@@ -34,6 +34,41 @@ CONVOY_TEST_DATABASE_URL='postgres://user:password@127.0.0.1:5432/convoy_test?ss
 ```
 
 These tests create and drop isolated schemas, so the test database user needs permission to create schemas. They verify that whole-file execution rolls back the first statement when the second fails, while statement splitting leaves partial state. Both cases retain dirty migration metadata and block subsequent `up` invocations. They also cover the embedded baseline, repeated execution, graceful stopping between files, initialization cleanup, and command output.
+
+Run the full integration suite, including PostgreSQL readiness checks, with:
+
+```sh
+CONVOY_TEST_DATABASE_URL='postgres://user:password@127.0.0.1:5432/convoy_test?sslmode=disable' \
+  go test -race -tags=integration ./... -v
+```
+
+## Server
+
+Set `CONVOY_DATABASE_URL` to a running PostgreSQL database, apply migrations, and start the server:
+
+```sh
+make migrate
+go build -o bin/server ./cmd/server
+./bin/server
+```
+
+`make run` starts the server through `go run`; use the standalone binary to observe signal handling and exit status directly. The default address is `127.0.0.1:8080`.
+
+| Endpoint | Success | Failure |
+| --- | --- | --- |
+| `GET /healthz` | `200 ok`: process is serving HTTP | Independent of PostgreSQL availability |
+| `GET /readyz` | `200 ready`: PostgreSQL ping succeeds | `503 not ready`: database unavailable, probe deadline reached, or shutdown requested |
+
+```sh
+curl -i http://127.0.0.1:8080/healthz
+curl -i http://127.0.0.1:8080/readyz
+```
+
+Startup verifies PostgreSQL connectivity within `CONVOY_DB_CONNECT_TIMEOUT` before listening. Readiness uses the request context with `CONVOY_DB_QUERY_TIMEOUT`; it checks connectivity, not schema compatibility. Database outages make readiness fail while liveness continues to succeed. The pool can reconnect after PostgreSQL returns; the server does not run migrations automatically.
+
+Logs are structured JSON on stderr, filtered by `CONVOY_LOG_LEVEL`. Connection strings and connection-string parse error causes are never logged. Probe responses contain no underlying database error details.
+
+SIGINT or SIGTERM stops accepting connections and gives active HTTP requests `CONVOY_SHUTDOWN_TIMEOUT` to finish. On timeout the server closes active connections and exits unsuccessfully. A second signal uses normal signal termination. The database pool closes after HTTP shutdown. The HTTP deadline does not impose a strict bound on synchronous pool cleanup. HTTP headers have a five-second read deadline; idle keep-alive connections have a one-minute deadline.
 
 ## Migrations
 
