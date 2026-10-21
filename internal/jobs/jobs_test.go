@@ -36,5 +36,8 @@ func TestGetRejectsInvalidIDBeforeUsingDatabase(t *testing.T) {
 		if !errors.Is(err, ErrInvalidID) || job.ID != "" {
 			t.Fatal("invalid ID must return a zero job and ErrInvalidID")
 		}
+		if err := New(nil).Complete(context.Background(), id); !errors.Is(err, ErrInvalidID) {
+			t.Fatal("completion must reject an invalid ID before using the database")
+		}
 	}
 }

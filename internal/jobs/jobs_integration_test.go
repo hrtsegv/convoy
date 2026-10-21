@@ -82,7 +82,9 @@ func TestJobSchemaConstraints(t *testing.T) {
 		{sql: `INSERT INTO jobs (kind, payload) VALUES ('', '{}')`, code: "23514"},
 		{sql: `INSERT INTO jobs (kind, payload) VALUES (NULL, '{}')`, code: "23502"},
 		{sql: `INSERT INTO jobs (kind, payload) VALUES ('echo', NULL)`, code: "23502"},
-		{sql: `INSERT INTO jobs (kind, payload, state) VALUES ('echo', '{}', 'running')`, code: "23514"},
+		{sql: `INSERT INTO jobs (kind, payload, state) VALUES ('echo', '{}', 'invalid')`, code: "23514"},
+		{sql: `INSERT INTO jobs (kind, payload, state) VALUES ('echo', '{}', 'succeeded')`, code: "23514"},
+		{sql: `INSERT INTO jobs (kind, payload, completed_at) VALUES ('echo', '{}', now())`, code: "23514"},
 		{sql: `INSERT INTO jobs (kind, payload, queue) VALUES ('echo', '{}', '')`, code: "23514"},
 	} {
 		_, err := pool.Exec(ctx, test.sql)

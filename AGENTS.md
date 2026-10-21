@@ -12,15 +12,18 @@ Involve the owner heavily in transaction boundaries, locking, claiming, leases, 
 
 ## Current scope
 
-Phase 1: durable enqueue and a single worker, in progress. Phase 0 is completed and approved.
+Phase 1: durable enqueue and a single worker, completed and approved. Phase 0 is also completed and approved.
 
 - Implemented: Go module, environment configuration, PostgreSQL pool bootstrap, migration command with embedded no-op baseline, server lifecycle and HTTP health/readiness skeleton, unit and integration tests, disposable test-database orchestration, development commands, and CI for the full suite.
-- Current slice: durable enqueue and lookup, using one implicit-transaction insert, JSONB payloads, and a single default queue. The owner reviewed and approved this implementation.
-- Next learning checkpoint: single-worker state transitions, claiming, handler execution outside transactions, and completion. Do not implement the worker until those semantics are agreed.
+- Durable enqueue and lookup are reviewed and approved.
+- The single worker, with committed claims, handlers outside transactions, and guarded completion, is reviewed and approved.
+- Next learning checkpoint: multiple workers, atomic claiming under contention, and the exact transaction and locking behavior. Do not start Phase 2 without the owner's direction.
 
 Phase 0 acceptance is satisfied: a fresh database migrates, the server starts and passes readiness, and `make test` runs unit and integration tests with automatic database setup and teardown.
 
-Phase 1 permits one queue and one worker, but the current slice includes only enqueue/read APIs. Multiple workers, leases, fencing, retries, idempotency, and delayed scheduling remain deferred. Kubernetes, KEDA, Prometheus, brokers, multiple control-plane nodes, partitioning, and sharding belong to later work. Keep application containerization and worker scaling for their own milestone.
+Phase 1 acceptance is satisfied: jobs survive API restart, one worker executes them outside store transactions, and succeeded jobs remain inspectable. The 100-job restart experiment and worker-failure tests pass.
+
+Phase 1 permits one queue and one serial worker. Multiple workers, leases, fencing, retries, idempotency, and delayed scheduling remain deferred. Kubernetes, KEDA, Prometheus, brokers, multiple control-plane nodes, partitioning, and sharding belong to later work. Keep application containerization and worker scaling for their own milestone.
 
 ## Repository map
 
@@ -31,7 +34,9 @@ Phase 1 permits one queue and one worker, but the current slice includes only en
 - `internal/migrate`: concrete migration runner, embedded SQL files, and tests for atomicity, dirty state, graceful stopping, and initialization cleanup.
 - `cmd/server`: configuration, structured logging, signal handling, startup connection deadline, and pool ownership.
 - `internal/server`: HTTP probes, job enqueue/read routes, and graceful HTTP lifecycle using `net/http`.
-- `internal/jobs`: concrete pgx pool store, job record, validation, and visible SQL for enqueue/read.
+- `internal/jobs`: concrete pgx pool store, job record, validation, and visible SQL for enqueue/read/claim/complete.
+- `cmd/worker`: separate worker process, startup pool ownership, signals, and sample `noop`/`sleep` handlers.
+- `internal/worker`: serial polling loop and handler function type; concrete store, no storage abstraction.
 - `internal/testdb`: integration-only helper that creates, migrates, and drops isolated test schemas.
 - `Makefile`: local formatting, vet, build, and test commands.
 - `scripts/test.sh`: creates a disposable PostgreSQL 17 container, waits for TCP readiness, migrates it, runs the full suite without caching, and removes its container and anonymous volume on exit.
@@ -74,13 +79,23 @@ Use JSON `slog` output with configured severity. Classify DSN parse errors befor
 
 ## Durable enqueue contract
 
-Migration 1 stays unchanged; migration 2 adds jobs with UUID IDs, a queue, kind, JSONB payload, state, and creation time. The current schema accepts only state `available`; expand it when worker transitions are agreed. The HTTP API enqueues into `default` only. No claim indexes or future ownership fields are added yet.
+Migrations 1 and 2 stay unchanged. Migration 2 adds jobs with UUID IDs, a queue, kind, JSONB payload, state, and creation time. Migration 3 expands the state constraint to `available`, `running`, and `succeeded` and adds nullable `completed_at`, present exactly when succeeded. The HTTP API enqueues into `default` only. No claim indexes or future ownership fields are added yet.
 
 Enqueue uses one `INSERT ... RETURNING`, with the full result checked before returning 201. A connection failure or timeout can leave a committed job even though the client sees an error. Never retry inserts automatically, imply that every error means rollback, or compensate by deleting a possibly committed job. Duplicate enqueue requests create distinct IDs until idempotency is introduced in its milestone.
 
 Job SQL uses request contexts capped by `JobQueryTimeout` (default 5s); `DBQueryTimeout` remains dedicated to readiness. HTTP JSON bodies are capped at 1 MiB. Kind and JSON payloads are validated, UUIDs are checked before lookups, and error responses expose no database details. PostgreSQL errors can contain payloads in both message and detail: log only static operation names and SQLSTATE, preserving underlying error chains for programmatic inspection.
 
 Tests include deferred commit failure after `RETURNING`, direct database constraints, payload validation, query cancellation/deadlines, and killing/restarting an API subprocess after 201 before reading the same job from another process.
+
+## Single-worker execution contract
+
+Use one separate worker process with direct access to the concrete PostgreSQL store for this milestone. A conditional `UPDATE ... RETURNING` selects the next available job in `default` by `created_at, id` and commits `running` before invoking its handler. No store transaction or borrowed store connection spans handler execution. A nil handler result triggers a separate conditional `running → succeeded` update with database completion time; require exactly one affected row.
+
+The registry is an immutable map of kind to handler function. Execute synchronously and poll every 250ms when empty. `JobQueryTimeout` bounds each claim/completion operation, not the handler. Claims return a zero job on any error. Stop on claim, missing-handler, handler, or completion failure; never retry execution or automatically change a possibly committed job back to available. Raw handler/database errors must not reach logs; use static operation names, job ID, and optional SQLSTATE.
+
+Signal cancellation stops polling and reaches the active handler; no drain policy is implemented yet. Cooperative cancellation exits normally, with operation-failure diagnostics if a job was interrupted; other failures exit unsuccessfully. Running jobs can remain stranded after failure or termination. A restarted worker processes only available jobs. This phase does not yet provide at-least-once execution after worker failure. Later concerns: failure classification, leases and recovery, fencing, handler timeouts and draining, and a worker API/SDK.
+
+Tests cover ordering and transition guards, committed state and released connections/locks during a blocked handler, deferred claim/completion failures, cancellation, a 100-job API-restart experiment, and worker termination without automatic reclamation.
 
 ## Verification
 

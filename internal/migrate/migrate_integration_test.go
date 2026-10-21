@@ -76,7 +76,7 @@ func TestMigrationDriverAtomicityAndDirtyState(t *testing.T) {
 	}
 }
 
-func TestMigrationDriverNoOpBaseline(t *testing.T) {
+func TestEmbeddedMigrationsPreserveBaselineAndJobs(t *testing.T) {
 	dsn, observer, schema := isolatedSchema(t)
 	runner, err := Open(context.Background(), dsn)
 	if err != nil {
@@ -103,11 +103,24 @@ func TestMigrationDriverNoOpBaseline(t *testing.T) {
 		t.Fatalf("expected only the migration metadata table, got %d tables", count)
 	}
 	assertTableExists(t, observer, schema, "schema_migrations", true)
-	if err := runner.Up(); err != nil {
+	if err := runner.Steps(1); err != nil {
 		t.Fatal("could not apply the jobs migration after the baseline")
 	}
 	assertVersion(t, runner, 2, false)
 	assertTableExists(t, observer, schema, "jobs", true)
+	jobTable := pgx.Identifier{schema, "jobs"}.Sanitize()
+	var id string
+	if err := observer.QueryRow(ctx, "INSERT INTO "+jobTable+" (kind, payload) VALUES ('noop', '{}') RETURNING id").Scan(&id); err != nil {
+		t.Fatal("could not enqueue a job before the execution migration")
+	}
+	if err := runner.Up(); err != nil {
+		t.Fatal("could not apply the execution migration")
+	}
+	assertVersion(t, runner, 3, false)
+	var preserved bool
+	if err := observer.QueryRow(ctx, "SELECT state = 'available' AND completed_at IS NULL FROM "+jobTable+" WHERE id = $1", id).Scan(&preserved); err != nil || !preserved {
+		t.Fatal("execution migration must preserve existing available jobs")
+	}
 	if err := runner.Up(); !errors.Is(err, gomigrate.ErrNoChange) {
 		t.Fatal("expected a repeated up invocation to report no change")
 	}
