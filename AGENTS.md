@@ -10,20 +10,11 @@ Pause for decisions that materially affect correctness or architecture, PostgreS
 
 Involve the owner heavily in transaction boundaries, locking, claiming, leases, fencing, ACK/NACK, retries, idempotency, concurrency, recovery, backpressure, and coordination. Mechanical work such as formatting, boilerplate, Makefile targets, and simple CI can proceed within the authorized task. Work incrementally and honor review checkpoints and component/phase boundaries.
 
-## Current scope
+## Scope discipline
 
-Phase 1: durable enqueue and a single worker, completed and approved. Phase 0 is also completed and approved.
+Establish the authorized task from the owner's instructions before starting a new component. Completing one milestone does not authorize starting the next. Do not introduce infrastructure, abstractions, or features ahead of the agreed scope.
 
-- Implemented: Go module, environment configuration, PostgreSQL pool bootstrap, migration command with embedded no-op baseline, server lifecycle and HTTP health/readiness skeleton, unit and integration tests, disposable test-database orchestration, development commands, and CI for the full suite.
-- Durable enqueue and lookup are reviewed and approved.
-- The single worker, with committed claims, handlers outside transactions, and guarded completion, is reviewed and approved.
-- Next learning checkpoint: multiple workers, atomic claiming under contention, and the exact transaction and locking behavior. Do not start Phase 2 without the owner's direction.
-
-Phase 0 acceptance is satisfied: a fresh database migrates, the server starts and passes readiness, and `make test` runs unit and integration tests with automatic database setup and teardown.
-
-Phase 1 acceptance is satisfied: jobs survive API restart, one worker executes them outside store transactions, and succeeded jobs remain inspectable. The 100-job restart experiment and worker-failure tests pass.
-
-Phase 1 permits one queue and one serial worker. Multiple workers, leases, fencing, retries, idempotency, and delayed scheduling remain deferred. Kubernetes, KEDA, Prometheus, brokers, multiple control-plane nodes, partitioning, and sharding belong to later work. Keep application containerization and worker scaling for their own milestone.
+Keep this file focused on working rules, navigation, and correctness contracts. Exclude progress reports, approval history, and backlog lists.
 
 ## Repository map
 
@@ -42,7 +33,7 @@ Phase 1 permits one queue and one serial worker. Multiple workers, leases, fenci
 - `scripts/test.sh`: creates a disposable PostgreSQL 17 container, waits for TCP readiness, migrates it, runs the full suite without caching, and removes its container and anonymous volume on exit.
 - `.github/workflows/ci.yml`: selects Go from `go.mod`; checks formatting, vet, build, and the same Docker-backed unit/integration suite with the race detector.
 
-Update this overview as approved work changes it. Read the relevant implementation and tests before editing.
+Keep the repository map accurate when code moves or responsibilities change. Read the relevant implementation and tests before editing.
 
 ## PostgreSQL bootstrap contract
 
@@ -65,13 +56,13 @@ The command rejects DSN parameters beginning with `x-`; driver options belong in
 
 After a SQL error in an ordinary migration, its SQL changes roll back but the separately recorded version remains dirty. Connection loss or forced termination can leave uncertain completion, so never infer rollback from dirty metadata alone. A new `up` invocation must refuse to proceed. Never automatically clear dirty state or force a version; recovery requires inspecting the actual schema. The command exposes `up` and `version`, runs separately from the server, and treats no pending migrations as success. Version 1 is a no-op baseline with no application tables.
 
-The first Ctrl-C cancels the command context; a small driver adapter checks it before marking the next file dirty. The current file and clean-version bookkeeping finish before stopping. Do not use the upstream `GracefulStop` channel: v4.20.1 has a reproduced data race on that path. The adapter preserves the library's full-run advisory lock and SQL execution behavior. Interrupted execution returns status 130. The second Ctrl-C uses normal signal termination. Driver `StatementTimeout` is explicitly zero, and readiness timeout configuration is not reused. Initialization, locking, and cleanup are not bounded by graceful stop. Later concern: revisit a dedicated per-file execution timeout before substantive migrations; do not expand migration plumbing without a concrete need.
+The first Ctrl-C cancels the command context; a small driver adapter checks it before marking the next file dirty. The current file and clean-version bookkeeping finish before stopping. Do not use the upstream `GracefulStop` channel: v4.20.1 has a reproduced data race on that path. The adapter preserves the library's full-run advisory lock and SQL execution behavior. Interrupted execution returns status 130. The second Ctrl-C uses normal signal termination. Driver `StatementTimeout` is explicitly zero, and readiness timeout configuration is not reused. Initialization, locking, and cleanup are not bounded by graceful stop.
 
 ## Server lifecycle contract
 
 The application applies `DBConnectTimeout` to a startup context, opens and verifies the pool, and cancels that context immediately afterward. It retains pool ownership until HTTP shutdown completes. Migrations run separately.
 
-`GET /healthz` checks process liveness without PostgreSQL. `GET /readyz` pings the concrete pool with a request-owned context capped by `DBQueryTimeout`, returning 503 on failure or shutdown. Responses contain no database error details. Readiness currently checks connectivity only. Later concern: schema compatibility checks before deployment and upgrade support.
+`GET /healthz` checks process liveness without PostgreSQL. `GET /readyz` pings the concrete pool with a request-owned context capped by `DBQueryTimeout`, returning 503 on failure or shutdown. Responses contain no database error details. Connectivity readiness does not establish schema compatibility.
 
 The first SIGINT or SIGTERM cancels the application lifecycle and restores default handling for a second signal. HTTP shutdown uses a fresh background context with `ShutdownTimeout`, allowing in-flight requests to drain rather than immediately cancelling them. A shutdown deadline force-closes connections and returns an error. Pool cleanup remains synchronous and is not strictly bounded by the HTTP shutdown timeout.
 
@@ -79,9 +70,9 @@ Use JSON `slog` output with configured severity. Classify DSN parse errors befor
 
 ## Durable enqueue contract
 
-Migrations 1 and 2 stay unchanged. Migration 2 adds jobs with UUID IDs, a queue, kind, JSONB payload, state, and creation time. Migration 3 expands the state constraint to `available`, `running`, and `succeeded` and adds nullable `completed_at`, present exactly when succeeded. The HTTP API enqueues into `default` only. No claim indexes or future ownership fields are added yet.
+Keep applied migrations unchanged and introduce schema changes through new migrations. The jobs table uses UUID IDs, a queue, kind, JSONB payload, state, and creation time. The state constraint accepts `available`, `running`, and `succeeded`; nullable `completed_at` is present exactly when succeeded. The HTTP API enqueues into `default` only.
 
-Enqueue uses one `INSERT ... RETURNING`, with the full result checked before returning 201. A connection failure or timeout can leave a committed job even though the client sees an error. Never retry inserts automatically, imply that every error means rollback, or compensate by deleting a possibly committed job. Duplicate enqueue requests create distinct IDs until idempotency is introduced in its milestone.
+Enqueue uses one `INSERT ... RETURNING`, with the full result checked before returning 201. A connection failure or timeout can leave a committed job even though the client sees an error. Never retry inserts automatically, imply that every error means rollback, or compensate by deleting a possibly committed job. Duplicate enqueue requests create distinct IDs.
 
 Job SQL uses request contexts capped by `JobQueryTimeout` (default 5s); `DBQueryTimeout` remains dedicated to readiness. HTTP JSON bodies are capped at 1 MiB. Kind and JSON payloads are validated, UUIDs are checked before lookups, and error responses expose no database details. PostgreSQL errors can contain payloads in both message and detail: log only static operation names and SQLSTATE, preserving underlying error chains for programmatic inspection.
 
@@ -89,11 +80,11 @@ Tests include deferred commit failure after `RETURNING`, direct database constra
 
 ## Single-worker execution contract
 
-Use one separate worker process with direct access to the concrete PostgreSQL store for this milestone. A conditional `UPDATE ... RETURNING` selects the next available job in `default` by `created_at, id` and commits `running` before invoking its handler. No store transaction or borrowed store connection spans handler execution. A nil handler result triggers a separate conditional `running → succeeded` update with database completion time; require exactly one affected row.
+Use one separate worker process with direct access to the concrete PostgreSQL store. A conditional `UPDATE ... RETURNING` selects the next available job in `default` by `created_at, id` and commits `running` before invoking its handler. No store transaction or borrowed store connection spans handler execution. A nil handler result triggers a separate conditional `running → succeeded` update with database completion time; require exactly one affected row.
 
 The registry is an immutable map of kind to handler function. Execute synchronously and poll every 250ms when empty. `JobQueryTimeout` bounds each claim/completion operation, not the handler. Claims return a zero job on any error. Stop on claim, missing-handler, handler, or completion failure; never retry execution or automatically change a possibly committed job back to available. Raw handler/database errors must not reach logs; use static operation names, job ID, and optional SQLSTATE.
 
-Signal cancellation stops polling and reaches the active handler; no drain policy is implemented yet. Cooperative cancellation exits normally, with operation-failure diagnostics if a job was interrupted; other failures exit unsuccessfully. Running jobs can remain stranded after failure or termination. A restarted worker processes only available jobs. This phase does not yet provide at-least-once execution after worker failure. Later concerns: failure classification, leases and recovery, fencing, handler timeouts and draining, and a worker API/SDK.
+Signal cancellation stops polling and reaches the active handler without draining it. Cooperative cancellation exits normally, with operation-failure diagnostics if a job was interrupted; other failures exit unsuccessfully. Running jobs can remain stranded after failure or termination. A restarted worker processes only available jobs. This behavior does not provide at-least-once execution after worker failure.
 
 Tests cover ordering and transition guards, committed state and released connections/locks during a blocked handler, deferred claim/completion failures, cancellation, a 100-job API-restart experiment, and worker termination without automatic reclamation.
 

@@ -2,7 +2,7 @@
 
 Convoy is a Go project for building a PostgreSQL-backed durable job execution system.
 
-The repository currently supports durable job enqueue and lookup in one queue, plus one worker that executes handlers and records success. Configuration, migrations, HTTP health/readiness, and development checks are included. Automatic recovery and retries are not implemented yet.
+Convoy supports durable job enqueue and lookup in one queue, plus one worker that executes handlers and records success. Configuration, migrations, HTTP health/readiness, and development checks are included. Failed or interrupted jobs require manual inspection; automatic recovery and retries are not supported.
 
 ## Development
 
@@ -108,7 +108,7 @@ go build -o bin/worker ./cmd/worker
 ./bin/worker
 ```
 
-`make worker` runs the command through `go run`. Use the standalone binary for signal experiments. The worker connects directly to PostgreSQL and operates independently of the HTTP server. Run one worker process for this milestone; concurrent workers and a remote worker protocol are later work.
+`make worker` runs the command through `go run`. Use the standalone binary for signal experiments. The worker connects directly to PostgreSQL and operates independently of the HTTP server. The supported configuration is one worker process.
 
 The command registers `noop` (succeeds without external effects) and `sleep` (waits for a positive Go duration in its payload). Register application handlers in the command's `map[string]worker.Handler`. A handler receives its execution context and the claimed job and returns an error or nil. Treat the registry as immutable while the worker runs. For example:
 
@@ -122,7 +122,7 @@ The worker selects one available job from `default`, ordered by creation time an
 
 Any claim, dispatch, handler, or completion failure stops the worker. Errors never trigger an automatic retry, requeue, or compensating update. A missing handler or handler error leaves the claimed job running. A database error may have an uncertain commit outcome. Inspect actual state before taking further action: `running` means claimed with no recorded terminal outcome, not proof that a worker is alive. Worker logs include job IDs, static operation names, and optional SQLSTATE; raw handler errors, payloads, and database error details are omitted.
 
-SIGINT or SIGTERM cancels polling and the handler context. Handlers must cooperate with cancellation; a second signal forces termination. There is no graceful drain or recovery yet. Cancellation during a job can leave it running, and cancellation during a database operation may leave an uncertain outcome. Normal signal cancellation exits successfully; other operation failures exit with status 1. A crashed worker's running job is not reclaimed when another worker starts. This intermediate implementation does not yet provide at-least-once execution after worker failures.
+SIGINT or SIGTERM cancels polling and the handler context. Handlers must cooperate with cancellation; a second signal forces termination. The worker does not drain active handlers or recover interrupted work. Cancellation during a job can leave it running, and cancellation during a database operation may leave an uncertain outcome. Normal signal cancellation exits successfully; other operation failures exit with status 1. A crashed worker's running job is not reclaimed when another worker starts. This behavior does not provide at-least-once execution after worker failures.
 
 Integration tests verify committed claims, completion guards, deferred commit failures, cancellation, and access to the only pool connection and the claimed row while a handler is blocked. The process experiment enqueues 100 jobs, restarts the API, processes all 100, and reads their completed records through HTTP. It also restarts the API during a long job, kills the worker, and verifies that a new worker processes available work while leaving the interrupted job running.
 
@@ -143,7 +143,7 @@ The command uses golang-migrate's pgx/v5 driver through `WithInstance`, pgx simp
 
 Failed migrations leave dirty metadata and block further `up` invocations. Inspect the actual database state before manual recovery; the command exposes neither `force` nor automatic repair. Dirty metadata alone does not prove whether SQL committed after a connection failure or forced interruption.
 
-The first Ctrl-C requests a graceful stop after the current file and its version bookkeeping finish. Cancellation is checked before the next file is marked dirty, avoiding a race in the pinned library's `GracefulStop` implementation. Interrupted execution exits with status 130. After the first interrupt, normal signal handling is restored so a second Ctrl-C can force termination and leave dirty metadata. The driver adds no execution timeout; PostgreSQL's configured timeouts still apply. `CONVOY_DB_QUERY_TIMEOUT` is reserved for readiness checks. Graceful stop does not bound waits during initialization, locking, or cleanup. A dedicated migration timeout is deferred until substantive schema changes need an execution budget.
+The first Ctrl-C requests a graceful stop after the current file and its version bookkeeping finish. Cancellation is checked before the next file is marked dirty, avoiding a race in the pinned library's `GracefulStop` implementation. Interrupted execution exits with status 130. After the first interrupt, normal signal handling is restored so a second Ctrl-C can force termination and leave dirty metadata. The driver adds no execution timeout; PostgreSQL's configured timeouts still apply. `CONVOY_DB_QUERY_TIMEOUT` is reserved for readiness checks. Graceful stop does not bound waits during initialization, locking, or cleanup.
 
 ## Configuration
 
